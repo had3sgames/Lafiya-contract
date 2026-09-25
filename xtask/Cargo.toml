@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Dependency-free on purpose: `cargo xtask` must build fast and identically
+# on Linux, macOS and Windows.
+[dependencies]

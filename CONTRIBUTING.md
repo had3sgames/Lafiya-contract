@@ -121,18 +121,39 @@ If proptest finds a failing case, it shrinks it to a minimal repro and writes it
 
 If a crash or invariant violation surfaces while working on either fuzz target, file it as its own bug report and fix it — don't fold an unrelated fix into a feature PR.
 
+### Task Runner
+Developer and CI tasks run through `cargo xtask` (the `xtask/` workspace member, aliased
+in `.cargo/config.toml`). It needs only the Rust toolchain pinned in `rust-toolchain.toml`
+(installed automatically by rustup), so it works the same on Linux, macOS, and Windows —
+no GNU make or WSL required. Run `cargo xtask help` for the full list:
+
+| Task | What it does |
+|------|--------------|
+| `cargo xtask check` | fmt `--check`, clippy (`-D warnings`), tests, contract wasm, conformance |
+| `cargo xtask ci` | `check` plus `test --all-features` — exactly what CI runs on all three OSes |
+| `cargo xtask fmt [--check]` / `clippy` / `test [--all-features]` / `fuzz` | individual steps |
+| `cargo xtask wasm [--reproducible]` | contract wasm; `--reproducible` as used for releases (docs/releasing.md) |
+| `cargo xtask bindings` | regenerate TypeScript bindings (needs `stellar-cli`) |
+| `cargo xtask conformance [--update]` | interface snapshot, error docs, events doc, bindings drift |
+| `cargo xtask budgets` | large-allowlist resource-budget load test |
+| `cargo xtask release-manifest` / `docs` | release manifest; rustdoc with `-D warnings` |
+
+The conformance scripts are still Python (stdlib only, plus `stellar-cli` to decode the contract
+spec); `check` skips them with a warning when `stellar` isn't on `PATH`, `ci` in a full
+environment runs them. Porting them to Rust (decoding the spec with `stellar-xdr`, with
+equivalence tests against the Python output on the snapshot fixtures) is tracked as follow-up work
+to #427; until then `xtask` is the only entry point, so the port won't change how they're invoked.
+
+The `Makefile` remains for one release as a thin compatibility shim (`make check` →
+`cargo xtask check`) and will then be removed.
+
 ### Local Quality Gate
 Always run the validation suite locally before committing:
 ```bash
-make check
+cargo xtask check
 ```
-This runs:
-1. `make fmt` (code formatting verification)
-2. `make clippy` (linter checks; warnings are treated as errors)
-3. `make test` (all cargo tests)
-4. `make wasm` (building target WASM binaries)
 
-There is no `rustfmt.toml` in this repo — that's intentional, not an oversight. `make fmt` / `cargo fmt --check` run against rustfmt's default settings, and PRs should not introduce a custom formatting config.
+There is no `rustfmt.toml` in this repo — that's intentional, not an oversight. `cargo xtask fmt --check` runs against rustfmt's default settings, and PRs should not introduce a custom formatting config.
 
 
 - Every new contract function needs unit tests covering both the success
@@ -142,14 +163,16 @@ There is no `rustfmt.toml` in this repo — that's intentional, not an oversight
   interface (see `attestation-registry`'s `AttesterRegistryInterface`),
   not a direct crate dependency on the callee — depending on the whole
   crate links its contract implementation into your wasm build too.
-- Any pull request (PR) that changes contract behavior, storage schemas, or public function signatures must include a corresponding entry in `CHANGELOG.md` under the `[Unreleased]` section. Refer to [releasing.md](docs/releasing.md) for details.
-- Run `make check` locally before pushing; it's the same set of checks CI
-  runs.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) for PR titles and
+  squash-merge messages: the CHANGELOG and version bump are generated from them
+  (see [releasing.md](docs/releasing.md)). A commit that changes `DataKey` or any
+  `#[contracttype]` must carry a `Schema-Impact:` trailer, or the release PR fails.
+- Run `cargo xtask check` locally before pushing; CI runs `cargo xtask ci`.
 - Keep `Cargo.lock` committed and up to date so builds are reproducible.
 
 ## Pull Request Process
 
 1. Fork the repository and create your branch from `main`.
-2. Ensure your changes compile and pass all quality checks locally (`make check`).
+2. Ensure your changes compile and pass all quality checks locally (`cargo xtask check`).
 3. Fill out the [Pull Request Template](.github/pull_request_template.md) completely, paying extra attention to the **Cross-Repo Impact** section if your changes touch shared interfaces.
 4. An admin will review your PR. All checks in CI must pass before merging.

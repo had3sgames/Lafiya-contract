@@ -10,6 +10,13 @@ updates:
           - "soroban-sdk"
           - "soroban-*"
 
+  # Bumps the exact channel pinned in rust-toolchain.toml. When merging one,
+  # also update REPRODUCIBLE_IMAGE in the Makefile to the matching rust image.
+  - package-ecosystem: "rust-toolchain"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

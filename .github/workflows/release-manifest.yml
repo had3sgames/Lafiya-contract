@@ -1,55 +1,162 @@
-name: Release Manifest (prototype)
+name: Release
 
-# Prototype from the [Spike] issue #135 / ADR-0010: generates and validates a
-# release manifest binding contract wasm, bindings, events, and deployment
-# state into one verifiable record. Not yet a required check — see
-# docs/adr/0010-release-manifest-and-compatibility.md "Follow-up" before
-# wiring this into the release process for real.
+# Tag pipeline (docs/releasing.md#automated-release-flow): reproducible wasm ->
+# SHA256SUMS -> provenance metadata assertion -> release manifest (generated +
+# validated + checked against SHA256SUMS) -> bindings -> signed SLSA build
+# provenance -> GitHub release -> follow-up PR adding the wasm to the
+# upgrade-compatibility fixtures.
+#
+# Triggers:
+#   - workflow_call from release-please.yml after a release PR merges (a tag
+#     created with GITHUB_TOKEN doesn't fire `push: tags` itself);
+#   - `push: tags` for a tag pushed by hand;
+#   - workflow_dispatch, dry-run by default, on any branch: builds the full
+#     artifact set and uploads it as a workflow artifact, publishes nothing.
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - "v*.*.*"
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      dry_run:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and upload artifacts only; no attestation, release, or fixtures PR"
+        type: boolean
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+  DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
 
 jobs:
-  release-manifest:
-    name: Generate & validate release manifest
+  release:
+    name: Build, attest, and publish release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32v1-none
-      - uses: Swatinem/rust-cache@v2
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
 
-      # Only the Soroban contract crates target wasm32v1-none; see ci.yml.
-      - name: Build contract wasm (unoptimized — matches upgrade-hash verification)
-        run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
+      - name: Reproducible contract wasm (pinned container)
+        run: make wasm-reproducible
+
+      - name: Assert provenance metadata in every wasm
+        run: python3 scripts/check_wasm_meta.py --commit "$(git rev-parse HEAD)" target/wasm32v1-none/release/*.wasm
 
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install jsonschema
 
-      - name: Generate manifest
+      - name: Generate + validate release manifest
         run: |
           python3 scripts/generate_release_manifest.py --pretty -o release-manifest.json
-
-      - name: Validate manifest against schema + internal consistency
-        run: python3 scripts/validate_release_manifest.py release-manifest.json
-
-      - name: Demonstrate a consumer compatibility check
-        run: |
+          python3 scripts/validate_release_manifest.py release-manifest.json
           python3 scripts/check_manifest_compatibility.py \
             release-manifest.json \
             docs/release-manifest/examples/lafiya-web.requirements.json
 
+      - name: Manifest wasm hashes must match the reproducible build
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+          sums = {pathlib.Path(p).stem: h for h, p in
+                  (l.split() for l in open("target/wasm32v1-none/release/SHA256SUMS"))}
+          bad = [c["name"] for c in json.load(open("release-manifest.json"))["contracts"]
+                 if c["wasm"]["sha256"] != sums.get(c["name"].replace("-", "_"))]
+          sys.exit(f"manifest/SHA256SUMS mismatch: {bad}" if bad else 0)
+          PY
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Build + pack TypeScript bindings
+        # npm publish stays off until PUBLISHING.md's prerequisites are met.
+        run: |
+          mkdir -p dist
+          for pkg in bindings/attester-registry bindings/attestation-registry; do
+            (cd "$pkg" && pnpm install --frozen-lockfile && pnpm run build && pnpm pack --pack-destination ../../dist)
+          done
+
+      - name: Assemble release artifacts
+        run: |
+          cp target/wasm32v1-none/release/*.wasm target/wasm32v1-none/release/SHA256SUMS release-manifest.json dist/
+          prev=$(git describe --tags --abbrev=0 "HEAD^" 2>/dev/null || git rev-list --max-parents=0 HEAD)
+          {
+            echo "## Schema impact"
+            git log "$prev..HEAD" --no-merges --format='%(trailers:key=Schema-Impact,valueonly,separator=%x2C)%x09%h %s' \
+              | awk -F'\t' '$1 != "" { print "- " $2 ": " $1 }' | grep . || echo "- None declared."
+            echo
+            echo "## Artifacts"
+            echo '```'
+            cat target/wasm32v1-none/release/SHA256SUMS
+            echo '```'
+            echo "Verify: \`gh attestation verify <file> --repo Lafiya-xyz/Lafiya-contract\` (docs/releasing.md)."
+          } > dist/RELEASE_NOTES.md
+          ls -l dist
+
+      - name: Signed SLSA build provenance (wasm + manifest)
+        id: attest
+        if: env.DRY_RUN != 'true'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/*.wasm
+            dist/release-manifest.json
+
+      - name: Include provenance bundle
+        if: env.DRY_RUN != 'true'
+        run: cp "${{ steps.attest.outputs.bundle-path }}" dist/provenance.intoto.jsonl
+
       - uses: actions/upload-artifact@v7
         with:
-          name: release-manifest
-          path: release-manifest.json
+          name: release-${{ env.TAG }}
+          path: dist/
+
+      - name: Publish GitHub release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(ls dist/* | grep -v RELEASE_NOTES.md)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" $assets --clobber
+            gh release view "$TAG" --json body -q .body > body.md
+            printf '\n\n' >> body.md && cat dist/RELEASE_NOTES.md >> body.md
+            gh release edit "$TAG" --notes-file body.md
+          else
+            gh release create "$TAG" $assets --title "$TAG" --notes-file dist/RELEASE_NOTES.md --verify-tag
+          fi
+
+      - name: Open PR adding wasm to upgrade-compatibility fixtures
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="chore/upgrade-fixtures-$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main && git switch -c "$branch" origin/main
+          mkdir -p "tests/fixtures/upgrade-compat/$TAG"
+          cp dist/*.wasm dist/SHA256SUMS "tests/fixtures/upgrade-compat/$TAG/"
+          git add tests/fixtures/upgrade-compat
+          git commit -m "chore(fixtures): add $TAG wasm to upgrade-compatibility fixtures"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore(fixtures): add $TAG wasm to upgrade-compatibility fixtures" \
+            --body "Automated follow-up to the $TAG release: the released wasm (see SHA256SUMS) as the \`previous\` side of future upgrade-compatibility tests."

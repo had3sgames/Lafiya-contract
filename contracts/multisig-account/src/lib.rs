@@ -69,6 +69,18 @@ pub enum Error {
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
+// Source-provenance metadata (SEP-46 `contractmetav0`, keys per SEP-55
+// "Contract Build Verification"). Deterministic for a given commit:
+// LAFIYA_GIT_COMMIT is injected by build.rs, see docs/releasing.md.
+soroban_sdk::contractmeta!(
+    key = "source_repo",
+    val = "github:Lafiya-xyz/Lafiya-contract"
+);
+soroban_sdk::contractmeta!(key = "home_domain", val = "lafiya-xyz.github.io");
+soroban_sdk::contractmeta!(key = "crate_name", val = env!("CARGO_PKG_NAME"));
+soroban_sdk::contractmeta!(key = "crate_version", val = env!("CARGO_PKG_VERSION"));
+soroban_sdk::contractmeta!(key = "source_rev", val = env!("LAFIYA_GIT_COMMIT"));
+
 #[contract]
 pub struct MultisigAccount;
 

@@ -36,11 +36,9 @@ jobs:
             exit 1
           fi
 
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+      # Installs the exact toolchain + components pinned in rust-toolchain.toml.
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install
 
       # stellar-cli has no maintained GitHub Action or crates.io-published install
       # path for a pinned release, so we pull the binary tarball directly. The

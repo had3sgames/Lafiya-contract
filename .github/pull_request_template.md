@@ -9,10 +9,17 @@
 
 ## Quality Checklist
 - [ ] Code follows the style guidelines of this project
-- [ ] I have run `make check` locally and it passes with no warnings or errors
+- [ ] I have run `cargo xtask check` locally and it passes with no warnings or errors
 - [ ] I have added unit tests covering success, failure, and authorization cases
 - [ ] I have commented my code, particularly in hard-to-understand areas
 - [ ] I have updated the documentation / README if applicable
+
+## Schema Impact (required)
+<!-- Does this PR change `DataKey` or any `#[contracttype]`? If so, the squash-merge
+     commit message MUST end with a trailer, e.g.
+       Schema-Impact: additive -- new DataKey::Paused, absent reads as false
+     The release PR fails without it (docs/releasing.md). Otherwise write "none". -->
+Schema-Impact: 
 
 ## Cross-Repo & Shared-Contract Impact
 - [ ] **Does this PR change a shared contract interface?** (e.g., attestation schema, public contract function signatures, events emitted)
